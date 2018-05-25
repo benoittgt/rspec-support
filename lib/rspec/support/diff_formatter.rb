@@ -1,12 +1,11 @@
 RSpec::Support.require_rspec_support 'matcher_definition'
-# RSpec::Support.require_rspec_support "diff_object_formater"
 
 module RSpec
   module Support
     # Provide additional output details beyond what `inspect` provides when
     # printing Time, DateTime, or BigDecimal
     # @api private
-    class ObjectFormatter # rubocop:disable Metrics/ClassLength
+    class DiffFormatter
       ELLIPSIS = "..."
 
       attr_accessor :max_formatted_output_length
@@ -17,30 +16,30 @@ module RSpec
         @default_instance ||= new
       end
 
-      def self.format(object)
-        default_instance.format(object)
+      def self.format(expected, actual)
+        default_instance.format(expected, actual)
       end
 
-      def self.prepare_for_inspection(object)
-        default_instance.prepare_for_inspection(object)
-      end
+      # def self.prepare_for_inspection(object)
+      #   default_instance.prepare_for_inspection(object)
+      # end
 
       def initialize(max_formatted_output_length=200)
         @max_formatted_output_length = max_formatted_output_length
         @current_structure_stack = []
       end
 
-      def format(object)
+      def format(expected, actual)
         if max_formatted_output_length.nil?
           prepare_for_inspection(object).inspect
         else
-          formatted_object = prepare_for_inspection(object).inspect
-          if formatted_object.length < max_formatted_output_length
-            formatted_object
+          expected_formatted_object = prepare_for_inspection(expected)
+          actual_formatted_object = prepare_for_inspection(actual)
+          if expected_formatted_object.inspect.length < max_formatted_output_length ||
+              actual_formatted_object.inspect.length < max_formatted_output_length
+            [expected_formatted_object, actual_formatted_object]
           else
-            beginning = truncate_string formatted_object, 0, max_formatted_output_length / 2
-            ending = truncate_string formatted_object, -max_formatted_output_length / 2, -1
-            beginning + ELLIPSIS + ending
+            Differ.new.diff(expected, actual)
           end
         end
       end
@@ -243,6 +242,68 @@ module RSpec
         end
       end
 
+      class Differ
+        attr_accessor :diff_intro, :diff_outro, :received_diff_part, :expected_diff_part
+        INTRO_OUTRO_LENGTH = 3
+        ELLISPSIS_ARRAY = ['.','.','.']
+
+        def initialize
+          @diff_intro = []
+          @diff_outro = []
+          @received_diff_part = []
+          @expected_diff_part = []
+        end
+
+        def diff(target, source)
+          target = target.to_s.split('')
+          source = source.to_s.split('')
+
+          until source.empty? || target.empty? || output_limit_reached?
+            compose_diff_parts(source, target)
+          end
+
+          expected = diff_intro_ellipsed + expected_diff_part + diff_outro_ellipsed
+          received = diff_intro_ellipsed + received_diff_part + diff_outro_ellipsed
+
+          [expected.join, received.join]
+        end
+
+        private
+
+        def compose_diff_parts(source, target)
+          first_source_item = source.shift
+          first_target_item = target.shift
+
+          if first_source_item == first_target_item
+            if expected_diff_part.empty?
+              diff_intro << first_source_item
+              diff_intro.delete_at(3) if diff_intro.size > 6
+            elsif diff_outro.size < 7
+              diff_outro << first_source_item
+            end
+          elsif diff_outro.empty?
+            received_diff_part << first_source_item
+            expected_diff_part << first_target_item
+          end
+        end
+
+        def output_limit_reached?
+          INTRO_OUTRO_LENGTH + received_diff_part.size + INTRO_OUTRO_LENGTH > 15  # Set to @max_formatted_output_length
+        end
+
+        def diff_intro_ellipsed
+          return diff_intro unless diff_intro.any? && diff_intro.size > INTRO_OUTRO_LENGTH
+          diff_intro[0..2] = ELLISPSIS_ARRAY
+          diff_intro
+        end
+
+        def diff_outro_ellipsed
+          return diff_outro unless diff_outro.any? && diff_outro.size > INTRO_OUTRO_LENGTH
+          diff_outro[4..-1] = ELLISPSIS_ARRAY
+          diff_outro
+        end
+      end
+
       INSPECTOR_CLASSES = [
         TimeInspector,
         DateTimeInspector,
@@ -258,7 +319,7 @@ module RSpec
         classes.delete(BigDecimalInspector) if RUBY_VERSION >= '2.4'
       end
 
-    private
+      private
 
       # Returns the substring defined by the start_index and end_index
       # If the string ends with a partial ANSI code code then that
